@@ -297,3 +297,250 @@ class MissingPointerInit(FortranRule):
 
         issues.sort(key=lambda x: (x.filename, x.line, x.description))
         return issues
+
+
+class CheckTabs(FortranRule):
+    """
+    Catches cases where a "use" statement is present but has no "only" claus.
+    """
+    _FORTRAN_LETTER = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+    _FORTRAN_DIGIT = '0123456789'
+    _FORTRAN_ALPHANUMERIC = _FORTRAN_LETTER + _FORTRAN_DIGIT + '_'
+    _FORTRAN_SPECIALS = ' =+-*/\\()[]{},.:;!"%&~<>?\'`^|$#@'
+    _FORTRAN_CHARACTERSET = _FORTRAN_ALPHANUMERIC + _FORTRAN_SPECIALS
+
+    _NEWLINE = '\n'
+
+    def __init__(self, ignore: List[str] = []):
+        """
+        Constructs a "MissingOnly" rule object taking a list of exception
+        modules which are not required to have an "only" clause.
+        """
+        assert isinstance(ignore, list)
+        self._ignore = ignore
+
+    def examine_fortran(self, subject: FortranSource) -> List[Issue]:
+        issues = []
+
+        text = subject.get_text()
+        index = 0
+        line = 1
+        state = 'code'
+        while index < len(text):
+            character = text[index]
+            if character == self._NEWLINE:
+                line += 1
+            elif character in self._FORTRAN_CHARACTERSET:
+                pass
+            else:
+                description = "Found tab"
+                issues.append(Issue(description, line=line))
+            index += 1
+        return issues
+
+
+class MissingOnly2(FortranRule):
+    """
+    Catches cases where a "use" statement is present but has no "only" claus.
+    """
+
+    def __init__(self, ignore: List[str] = []):
+        """
+        Constructs a "MissingOnly" rule object taking a list of exception
+        modules which are not required to have an "only" clause.
+        """
+        assert isinstance(ignore, list)
+        self._ignore = ignore
+
+    def examine_fortran(self, subject: FortranSource) -> List[Issue]:
+        issues = []
+
+        for statement in subject.find_all(Fortran2003.Use_Stmt):
+            print ("statement = ", statement)
+        for statement in subject.find_all(Fortran2003.Data_Component_Def_Stmt):
+            print ("statement = ", statement)
+        for statement in subject.find_all(Fortran2003.Proc_Component_Def_Stmt):
+            print ("statement = ", statement)
+        for statement in subject.find_all(Fortran2003.Procedure_Declaration_Stmt):
+            print ("statement = ", statement)
+        for statement in subject.find_all(Fortran2003.Type_Declaration_Stmt):
+            print ("statement = ", statement)
+        print ("text = ", subject.get_text())
+        return issues
+
+class FortranSemiColon(Rule):
+    # pylint: disable=too-few-public-methods
+    """
+    Scans the source for characters which are not supported by Fortran.
+    """
+    _FORTRAN_LETTER = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+    _FORTRAN_DIGIT = '0123456789'
+    _FORTRAN_ALPHANUMERIC = _FORTRAN_LETTER + _FORTRAN_DIGIT + '_'
+    _FORTRAN_SPECIALS = ' =+-*/\\()[]{},.:;!"%&~<>?\'`^|$#@'
+    _FORTRAN_CHARACTERSET = _FORTRAN_ALPHANUMERIC + _FORTRAN_SPECIALS
+
+    _APOSTROPHY = "'"
+    _EXCLAMATION = '!'
+    _NEWLINE = '\n'
+    _QUOTE = '"'
+
+    def examine(self, subject: FortranSource) -> List[Issue]:
+        # pylint: disable=too-many-branches
+        """
+        Examines the source code for none Fortran characters.
+
+        This is complicated by the fact that the source must consist of only
+        certain characters except comments and strings. These may contain
+        anything.
+        """
+        issues = super(FortranSemiColon, self).examine(subject)
+
+        text = subject.get_text()
+        index = 0
+        line = 1
+        state = 'code'
+        while index < len(text):
+            character = text[index]
+            if state == 'code':
+                if character == self._NEWLINE:
+                    line += 1
+                elif character == self._EXCLAMATION:
+                    state = 'comment'
+                elif character == self._APOSTROPHY:
+                    state = 'apostraphystring'
+                elif character == self._QUOTE:
+                    state = 'quotestring'
+                elif character == ";":
+                    description = "Found ;"
+                    issues.append(Issue(description, line=line))
+                elif character in self._FORTRAN_CHARACTERSET:
+                    pass
+            elif state == 'comment':
+                if character == self._NEWLINE:
+                    line += 1
+                    state = 'code'
+            elif state == 'apostraphystring':
+                if character == self._APOSTROPHY:
+                    state = 'code'
+            elif state == 'quotestring':
+                if character == self._QUOTE:
+                    state = 'code'
+            else:
+                raise Exception('Parser in unknown state: ' + state)
+            index += 1
+
+        return issues
+
+
+class Dimension(FortranRule):
+    """
+    Catches cases where a pointer is declared without being initialised.
+    """
+
+    def __init__(self, default='null()'):
+        """
+        Constructs a MissingPointerInit rule object taking a default
+        assignment.
+
+        Todo: Obviously the default is not used as we don't support coercing
+              source at the moment.
+
+        @param default: Target to be used if missing assignment found.
+        """
+        self._default = default
+
+    def examine_fortran(self, subject: FortranSource):
+        issues: List[Issue] = []
+
+        candidates: List[Fortran2003.StmtBase] = []
+        # Component variables
+        candidates.extend(
+            subject.find_all(Fortran2003.Data_Component_Def_Stmt))
+        # Variable declaration
+        candidates.extend(
+            subject.find_all(Fortran2003.Type_Declaration_Stmt))
+
+        for candidate in candidates:
+
+            problem = 'Use of dimension attribute for {name}.'
+
+            attributes = candidate.items[1]
+            if attributes is None:
+                continue
+            cannon_attr = list(str(item).lower().replace(' ', '')
+                               for item in attributes.items)
+            argument_def = 'intent(in)' in cannon_attr \
+                           or 'intent(out)' in cannon_attr \
+                           or 'intent(inout)' in cannon_attr
+            if any (x.startswith('dimension') for x in cannon_attr):
+                for variable in candidate.items[2].items:
+                    name = str(variable.items[0])
+                    message = problem.format(name=name)
+                    line_number = candidate.item.span[0]
+                    issues.append(Issue(message, line=line_number))
+
+        issues.sort(key=lambda x: (x.filename, x.line, x.description))
+        return issues
+
+class FortranOldComparisons(Rule):
+    # pylint: disable=too-few-public-methods
+    """
+    Scans the source for characters which are not supported by Fortran.
+    """
+    _FORTRAN_LETTER = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz'
+    _FORTRAN_DIGIT = '0123456789'
+    _FORTRAN_ALPHANUMERIC = _FORTRAN_LETTER + _FORTRAN_DIGIT + '_'
+    _FORTRAN_SPECIALS = ' =+-*/\\()[]{},.:;!"%&~<>?\'`^|$#@'
+    _FORTRAN_CHARACTERSET = _FORTRAN_ALPHANUMERIC + _FORTRAN_SPECIALS
+
+    _APOSTROPHY = "'"
+    _EXCLAMATION = '!'
+    _NEWLINE = '\n'
+    _QUOTE = '"'
+
+    def examine(self, subject: FortranSource) -> List[Issue]:
+        # pylint: disable=too-many-branches
+        """
+        Examines the source code for none Fortran characters.
+
+        This is complicated by the fact that the source must consist of only
+        certain characters except comments and strings. These may contain
+        anything.
+        """
+        issues = super(FortranOldComparisons, self).examine(subject)
+
+        text = subject.get_text()
+        index = 0
+        line = 1
+        state = 'code'
+        while index < len(text)-4:
+            characters = text[index:index+4]
+            if state == 'code':
+                if characters[0] == self._NEWLINE:
+                    line += 1
+                elif characters[0] == self._EXCLAMATION:
+                    state = 'comment'
+                elif characters[0] == self._APOSTROPHY:
+                    state = 'apostraphystring'
+                elif characters[0] == self._QUOTE:
+                    state = 'quotestring'
+                elif characters == ".eq." or characters == ".ne." or characters == ".gt." or characters == ".lt." or characters == ".ge." or characters == ".le.":
+                    description = "Found " + characters
+                    issues.append(Issue(description, line=line))
+                elif characters[0] in self._FORTRAN_CHARACTERSET:
+                    pass
+            elif state == 'comment':
+                if characters[0] == self._NEWLINE:
+                    line += 1
+                    state = 'code'
+            elif state == 'apostraphystring':
+                if characters[0] == self._APOSTROPHY:
+                    state = 'code'
+            elif state == 'quotestring':
+                if characters[0] == self._QUOTE:
+                    state = 'code'
+            else:
+                raise Exception('Parser in unknown state: ' + state)
+            index += 1
+
+        return issues
